@@ -14,6 +14,8 @@ func main() {
 		log.Fatalln("Failed to parse config", err)
 	}
 
+	log.Infof("Starting server with BASE_PATH=%s", cfg.BasePath)
+
 	srv, err := server.New(cfg)
 
 	if err != nil {

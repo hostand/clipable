@@ -5,6 +5,8 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"net/http"
+	"strings"
+
 	"webserver/config"
 	"webserver/services"
 	"webserver/services/db"
@@ -35,6 +37,17 @@ type Routes struct {
 	InternalRouter http.Handler
 }
 
+// normalizeBasePath garante formato correto
+func normalizeBasePath(p string) string {
+	if p == "" || p == "/" {
+		return "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return strings.TrimRight(p, "/")
+}
+
 // New configures the handler functions for each API endpoint
 func New(cfg *config.Config, g *services.Group, store sessions.Store) (*Routes, error) {
 	r := &Routes{
@@ -46,17 +59,36 @@ func New(cfg *config.Config, g *services.Group, store sessions.Store) (*Routes, 
 
 	logrus.SetLevel(logrus.InfoLevel)
 
+	basePath := normalizeBasePath(cfg.BasePath)
+
 	router := mux.NewRouter()
 	internalRouter := mux.NewRouter()
 
-	router.Use(DynamicTimeoutMiddleware)
-	router.Use(LoggingMiddleware(logrus.InfoLevel))
-	internalRouter.Use(LoggingMiddleware(logrus.DebugLevel))
-	router.Use(r.ParseVars)
-	if !cfg.Debug {
-		router.Use(handlers.RecoveryHandler())
+	// ROOT router com prefixo (APENAS público)
+	var root *mux.Router
+	if basePath != "/" {
+		root = router.PathPrefix(basePath).Subrouter()
+	} else {
+		root = router
 	}
-	api := router.PathPrefix("/api").Subrouter()
+
+	// INTERNAL nunca usa basePath
+	internalRoot := internalRouter
+
+	// Middlewares (somente público)
+	root.Use(DynamicTimeoutMiddleware)
+	root.Use(LoggingMiddleware(logrus.InfoLevel))
+	root.Use(r.ParseVars)
+
+	if !cfg.Debug {
+		root.Use(handlers.RecoveryHandler())
+	}
+
+	// Internal middleware separado
+	internalRoot.Use(LoggingMiddleware(logrus.DebugLevel))
+
+	// API prefix
+	api := root.PathPrefix("/api").Subrouter()
 
 	mdlw := middleware.New(middleware.Config{
 		Recorder: metrics.NewRecorder(metrics.Config{
@@ -69,23 +101,27 @@ func New(cfg *config.Config, g *services.Group, store sessions.Store) (*Routes, 
 	}
 
 	internalEndpoint := func(path string, f http.HandlerFunc, method ...string) {
-		internalRouter.Handle(path, f).Methods(method...)
+		internalRoot.Handle(path, f).Methods(method...)
 	}
 
-	// TODO: swap to https://github.com/uptrace/bunrouter?
-
-	// INTERNAL ENDPOINTS
+	// =========================
+	// INTERNAL ENDPOINTS (SEM basePath)
+	// =========================
 	internalEndpoint("/s3/{cid}/{file}", r.ReadObject, http.MethodGet)
 	internalEndpoint("/s3/{cid}/{file}", r.UploadObject, http.MethodPost)
 	internalEndpoint("/progress/{cid}", r.SetProgress, http.MethodPost)
 
+	// =========================
 	// AUTH ENDPOINTS
+	// =========================
 	endpoint("/auth/login", r.ResponseHandler(r.Login), http.MethodPost)
 	endpoint("/auth/register", r.ResponseHandler(r.Register), http.MethodPost)
 	endpoint("/auth/register", r.ResponseHandler(r.AllowRegistration), http.MethodOptions)
 	endpoint("/auth/logout", r.ResponseHandler(r.Logout), http.MethodPost)
 
+	// =========================
 	// USER ENDPOINTS
+	// =========================
 	endpoint("/users/search", r.Handler(r.SearchUsers), http.MethodGet)
 	endpoint("/users/me", r.Handler(r.GetCurrentUser), http.MethodGet)
 	endpoint("/users", r.Handler(r.GetUsers), http.MethodGet)
@@ -93,7 +129,9 @@ func New(cfg *config.Config, g *services.Group, store sessions.Store) (*Routes, 
 	endpoint("/users/{uid:[a-zA-Z0-9-]{4,}}", r.Handler(r.GetUser), http.MethodGet)
 	endpoint("/users/{uid:[a-zA-Z0-9-]{4,}}", r.Handler(r.UpdateUser), http.MethodPatch)
 
+	// =========================
 	// CLIP ENDPOINTS
+	// =========================
 	endpoint("/clips", r.Handler(r.UploadClip), http.MethodPost)
 	endpoint("/clips", r.Handler(r.GetClips), http.MethodGet)
 	endpoint("/clips/search", r.Handler(r.SearchClips), http.MethodGet)
@@ -102,16 +140,26 @@ func New(cfg *config.Config, g *services.Group, store sessions.Store) (*Routes, 
 	endpoint("/clips/{cid:[a-zA-Z0-9-]{4,}}", r.Handler(r.UpdateClip), http.MethodPatch)
 	endpoint("/clips/{cid:[a-zA-Z0-9-]{4,}}", r.Handler(r.DeleteClip), http.MethodDelete)
 
+	// =========================
 	// MPEG-DASH ENDPOINTS
+	// =========================
 	endpoint("/clips/{cid:[a-zA-Z0-9-]{4,}}/{filename}", r.StreamHandler(r.GetStreamFile), http.MethodGet)
 
+	// =========================
+	// CORS
+	// =========================
 	if cfg.CORS.Enabled {
 		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{
 			InsecureSkipVerify: true,
 		}
 
 		r.Router = cors.New(cors.Options{
-			AllowedOrigins: []string{cfg.CORS.Origin, "https://reference.dashif.org", "https://shaka-player-demo.appspot.com", "https://csb-pygk8-mkhuda.vercel.app"},
+			AllowedOrigins: []string{
+				cfg.CORS.Origin,
+				"https://reference.dashif.org",
+				"https://shaka-player-demo.appspot.com",
+				"https://csb-pygk8-mkhuda.vercel.app",
+			},
 			AllowedMethods: []string{
 				http.MethodGet,
 				http.MethodPost,
