@@ -13,7 +13,7 @@ COPY frontend/pnpm-lock.yaml frontend/.npmr[c] ./
 RUN pnpm fetch
 
 COPY frontend/ .
-RUN pnpm install -r --offline
+RUN pnpm install -r
 RUN pnpm build
 
 

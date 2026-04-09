@@ -1,10 +1,11 @@
-version: '3.1'
+version: '3.9'
 
 services:
   postgres:
     image: postgres:14
+    container_name: postgres_clip
     environment:
-      - POSTGRES_HOST_AUTH_METHOD=trust
+      POSTGRES_HOST_AUTH_METHOD: trust
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -15,31 +16,35 @@ services:
 
   minio:
     image: minio/minio
+    container_name: minio
+    environment:
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: myminiokeythatishouldchange123
     volumes:
       - minio_data:/data
-    # ports:
-    #   - 9001:9001
-    environment:
-      - "MINIO_ACCESS_KEY=minio"
-      - "MINIO_SECRET_KEY=myminiokeythatishouldchange123"
     command: server /data --console-address ":9001"
 
   createbuckets:
     image: minio/mc
+    container_name: createbuckets
     depends_on:
       - minio
     entrypoint: >
       /bin/sh -c "
       /usr/bin/mc alias set clipable http://minio:9000 minio myminiokeythatishouldchange123;
-      /usr/bin/mc mb clipable/clips;
+      /usr/bin/mc mb --ignore-existing clipable/clips;
       exit 0;
       "
+
   clipable:
-    image: ghcr.io/clipable/clipable:latest
-    # All of these environment variables are documented here: https://github.com/clipable/clipable/wiki/Environment-Variables
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: clipable
     environment:
+      # Backend / App
       MAX_UPLOAD_SIZE: 5GB
-      FFMPEG_CONCURRENCY: 1 
+      FFMPEG_CONCURRENCY: 1
       FFMPEG_THREADS: 0
       FFMPEG_PRESET: medium
       FFMPEG_TUNE: film
@@ -56,10 +61,12 @@ services:
       S3_ADDRESS: minio:9000
       S3_SECURE: false
     ports:
-      - 80:80
+      - "3000:3000"  # Nginx dentro do container expõe porta 80
     depends_on:
       postgres:
         condition: service_healthy
+      minio:
+        condition: service_started
 
 volumes:
   pg_data: {}
